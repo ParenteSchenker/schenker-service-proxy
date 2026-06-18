@@ -2,9 +2,38 @@
 <html>
 <head>
   <meta charset="UTF-8"/>
-  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <title>Schenker Service Assistant</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; font-size: 13px; margin: 0; padding: 20px; background: #faf9f8; }
+    #status { color: #605e5c; margin: 12px 0; }
+    .result { display: none; }
+    .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #edebe9; font-size: 12px; }
+    .badge-ok   { background: #dff6dd; color: #107c10; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-miss { background: #fde7e9; color: #a4262c; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-par  { background: #fff4ce; color: #7a5e00; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .draft { background: #fff; border: 1px solid #edebe9; border-radius: 4px; padding: 10px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; margin-top: 8px; }
+    .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #605e5c; letter-spacing: 0.05em; margin: 12px 0 6px; }
+    button { background: #0078d4; color: #fff; border: none; border-radius: 4px; padding: 8px 16px; font-size: 13px; cursor: pointer; margin-top: 8px; margin-right: 6px; }
+    button:hover { background: #106ebe; }
+    button.secondary { background: #fff; color: #0078d4; border: 1px solid #0078d4; }
+    button.secondary:hover { background: #f3f9ff; }
+    h2 { font-size: 14px; font-weight: 600; color: #0078d4; margin: 0 0 12px; }
+  </style>
 </head>
 <body>
+
+<h2>Schenker Service Assistant</h2>
+<div id="status">Avvio analisi in corso...</div>
+<div id="result" class="result">
+  <div class="section-title">Informazioni rilevate</div>
+  <div id="info-rows"></div>
+  <div id="action-section"></div>
+  <div style="margin-top:10px">
+    <button onclick="copyDraft()">Copia bozza risposta</button>
+    <button class="secondary" onclick="window.close()">Chiudi</button>
+  </div>
+</div>
+
 <script>
 const SYSTEM_PROMPT = `Sei l'assistente tecnico post-vendita di Schenker, azienda leader nella produzione di dissalatori a recupero di energia per barche da diporto.
 
@@ -16,7 +45,7 @@ Quando ricevi un'email di richiesta assistenza, analizzala e verifica se contien
    - pannello MINITOUCH / TOUCH / DIGITAL: messaggio di errore testuale visualizzato
 3. DESCRIZIONE_VIDEO: descrizione dettagliata del problema + video del manometro durante il funzionamento + video del problema quando possibile
 
-LINGUA: rileva la lingua dell'email ricevuta e rispondi nella stessa lingua del cliente. Se l'email è in inglese rispondi in inglese, se è in italiano in italiano, se è in francese in francese, ecc.
+LINGUA: rileva la lingua dell'email ricevuta e rispondi nella stessa lingua del cliente. Il sommario tecnico è sempre in italiano.
 
 Rispondi SOLO con un oggetto JSON valido, senza testo aggiuntivo né backtick, con questa struttura:
 {
@@ -29,14 +58,22 @@ Rispondi SOLO con un oggetto JSON valido, senza testo aggiuntivo né backtick, c
   "sommario_tecnico": "Se tutte_presenti è true: riassunto del problema in 2-3 righe per l'ingegnere (sempre in italiano). Altrimenti null."
 }`;
 
-let ready = false;
+let currentDraft = "";
 
-window.addEventListener("message", async (event) => {
-  const payload = event.data;
-  if (!payload || !payload.apiKey) return;
+async function init() {
+  const statusEl = document.getElementById("status");
 
-  const replyTo = event.source;
-  const replyOrigin = event.origin;
+  // Legge i parametri passati nell'URL
+  const params = new URLSearchParams(window.location.search);
+  const apiKey = params.get("k");
+  const emailText = decodeURIComponent(params.get("e") || "");
+
+  if (!apiKey || !emailText) {
+    statusEl.textContent = "Errore: parametri mancanti. Riavvia dall'add-in Outlook.";
+    return;
+  }
+
+  statusEl.textContent = "Analisi in corso con Claude...";
 
   try {
     const controller = new AbortController();
@@ -47,14 +84,14 @@ window.addEventListener("message", async (event) => {
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": payload.apiKey,
+        "x-api-key": apiKey,
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: `Analizza questa email:\n\n${payload.emailText}` }]
+        messages: [{ role: "user", content: `Analizza questa email:\n\n${emailText}` }]
       })
     });
 
@@ -62,10 +99,7 @@ window.addEventListener("message", async (event) => {
 
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}));
-      replyTo.postMessage({
-        success: false,
-        error: `Errore API ${response.status}: ${errData.error?.message || JSON.stringify(errData)}`
-      }, replyOrigin);
+      statusEl.textContent = `Errore API ${response.status}: ${errData.error?.message || JSON.stringify(errData)}`;
       return;
     }
 
@@ -76,22 +110,76 @@ window.addEventListener("message", async (event) => {
     try {
       result = JSON.parse(text.trim());
     } catch(e) {
-      replyTo.postMessage({
-        success: false,
-        error: `Errore parsing risposta: ${text.substring(0, 200)}`
-      }, replyOrigin);
+      statusEl.textContent = `Errore parsing risposta: ${text.substring(0, 300)}`;
       return;
     }
 
-    replyTo.postMessage({ success: true, result }, replyOrigin);
+    renderResult(result);
+    statusEl.textContent = "";
 
   } catch(err) {
-    const msg = err.name === "AbortError"
-      ? "Timeout: nessuna risposta da Anthropic entro 25 secondi. Riprova."
+    statusEl.textContent = err.name === "AbortError"
+      ? "Timeout: nessuna risposta da Anthropic. Riprova."
       : `Errore di rete: ${err.message}`;
-    replyTo.postMessage({ success: false, error: msg }, replyOrigin);
   }
-});
+}
+
+function renderResult(r) {
+  const fields = [
+    { key: "seriale",           label: "Numero seriale" },
+    { key: "errore_pannello",   label: "Errore pannello" },
+    { key: "descrizione_video", label: "Descrizione + video" }
+  ];
+
+  let rows = "";
+  fields.forEach(f => {
+    const info = r[f.key];
+    let badge, detail;
+    if (info.presente) {
+      badge = `<span class="badge-ok">Presente</span>`;
+      detail = info.valore ? `<span style="color:#444;font-size:11px;margin-left:6px">${info.valore}</span>` : "";
+    } else if (info.parziale) {
+      badge = `<span class="badge-par">Parziale</span>`;
+      detail = "";
+    } else {
+      badge = `<span class="badge-miss">Mancante</span>`;
+      detail = "";
+    }
+    rows += `<div class="row"><span>${f.label}${detail}</span>${badge}</div>`;
+  });
+
+  document.getElementById("info-rows").innerHTML = rows;
+
+  currentDraft = r.bozza_risposta || "";
+  const langFlag = { it: "🇮🇹", en: "🇬🇧", fr: "🇫🇷", de: "🇩🇪", es: "🇪🇸" };
+  const flag = langFlag[r.lingua] || "🌐";
+
+  const actionSection = document.getElementById("action-section");
+  if (r.tutte_presenti) {
+    actionSection.innerHTML = `
+      <div class="section-title" style="color:#107c10">✔ Ticket completo — pronto per analisi</div>
+      <div class="draft">${r.sommario_tecnico || ""}</div>`;
+  } else {
+    actionSection.innerHTML = `
+      <div class="section-title">Bozza risposta al cliente ${flag}</div>
+      <div class="draft">${currentDraft}</div>`;
+  }
+
+  document.getElementById("result").style.display = "block";
+}
+
+function copyDraft() {
+  if (!currentDraft) return;
+  const el = document.createElement("textarea");
+  el.value = currentDraft;
+  document.body.appendChild(el);
+  el.select();
+  document.execCommand("copy");
+  document.body.removeChild(el);
+  alert("Bozza copiata negli appunti!");
+}
+
+init();
 </script>
 </body>
 </html>
