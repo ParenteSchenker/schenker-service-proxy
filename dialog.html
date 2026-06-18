@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+</head>
+<body>
+<script>
+Office.onReady(() => {
+  // Riceve il testo email dal pannello principale
+  Office.context.ui.addHandlerAsync(
+    Office.EventType.DialogParentMessageReceived,
+    async (arg) => {
+      const payload = JSON.parse(arg.message);
+      const apiKey  = payload.apiKey;
+      const emailText = payload.emailText;
+
+      const SYSTEM_PROMPT = `Sei l'assistente tecnico post-vendita di Schenker, azienda leader nella produzione di dissalatori a recupero di energia per barche da diporto.
+
+Quando ricevi un'email di richiesta assistenza, analizzala e verifica se contiene le seguenti 3 informazioni obbligatorie:
+
+1. SERIALE: numero seriale del dissalatore
+2. ERRORE_PANNELLO: tipo di errore visualizzato sul pannello —
+   - pannello BASIC: numero di lampeggi della spia
+   - pannello MINITOUCH / TOUCH / DIGITAL: messaggio di errore testuale visualizzato
+3. DESCRIZIONE_VIDEO: descrizione dettagliata del problema + video del manometro durante il funzionamento + video del problema quando possibile
+
+Rispondi SOLO con un oggetto JSON valido, senza testo aggiuntivo né backtick, con questa struttura:
+{
+  "seriale": { "presente": true/false, "valore": "valore trovato o null" },
+  "errore_pannello": { "presente": true/false, "parziale": true/false, "valore": "valore trovato o null" },
+  "descrizione_video": { "presente": true/false, "parziale": true/false, "valore": "breve sintesi o null" },
+  "tutte_presenti": true/false,
+  "bozza_risposta": "Testo completo della risposta da inviare al cliente in italiano. Se mancano informazioni, richiedere SOLO quelle mancanti in modo professionale e cordiale. Se manca l'info sul pannello, spiegare brevemente la differenza tra BASIC (lampeggi) e MINITOUCH/TOUCH/DIGITAL (messaggio testuale). Se tutto è presente, confermare la presa in carico e che un ingegnere la contatterà a breve.",
+  "sommario_tecnico": "Se tutte_presenti è true: riassunto del problema in 2-3 righe per l'ingegnere. Altrimenti null."
+}`;
+
+      try {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01"
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1000,
+            system: SYSTEM_PROMPT,
+            messages: [{ role: "user", content: `Analizza questa email:\n\n${emailText}` }]
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          Office.context.ui.messageParent(JSON.stringify({
+            success: false,
+            error: `Errore API ${response.status}: ${errData.error?.message || JSON.stringify(errData)}`
+          }));
+          return;
+        }
+
+        const data = await response.json();
+        const text = data.content?.map(i => i.text || "").join("") || "";
+        const result = JSON.parse(text.trim());
+
+        Office.context.ui.messageParent(JSON.stringify({ success: true, result }));
+
+      } catch(err) {
+        Office.context.ui.messageParent(JSON.stringify({
+          success: false,
+          error: `Errore di rete: ${err.message}`
+        }));
+      }
+    }
+  );
+});
+</script>
+</body>
+</html>
